@@ -27,6 +27,7 @@ from curveball.python import curvature_matrix_vector_products
 # pylint enable=long-line
 from curveball.python import utils
 from tensorflow.python.util import nest
+from tensorflow.python.ops import state_ops
 
 
 class CurveballOptimizer(tf.train.GradientDescentOptimizer):
@@ -134,7 +135,12 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
     # z = rho*z - beta * dz
     # w = w + lr*z
     self._dz = [tf.zeros_like(var) for var in tf.trainable_variables()]
-    self._z = [tf.zeros_like(var) for var in tf.trainable_variables()]
+    self._z = [tf.get_variable(var.name.split(":")[0] + "_z",
+                               shape=var.shape,
+                               initializer=tf.initializers.zeros(),
+                               trainable=False)
+             for var in tf.trainable_variables()]
+    print("self._z initially is: ", self._z)
 
     self._output = input_to_loss
 
@@ -673,6 +679,7 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
 
 
     HlJmz = tf.matmul(Hl[0], realJmz)
+    HlJmz = tf.reshape(HlJmz, [-1])
     print("HlJmz: ", HlJmz)
 
     Jl = tf.gradients(self._loss_fn, self._output)
@@ -687,23 +694,81 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
     print("JmHlJmzJl: ", JmHlJmzJl)
 
     
-    JmHlJmzJlLz = [GGN + tf.scalar_mul(self._lambda, Lz) for GGN, Lz in zip(JmHlJmzJl, self._z)]
-    print("JmHlJmzJl + lambda*z: ", JmHlJmzJlLz)
+    dz = [GGN + tf.scalar_mul(self._lambda, Lz) for GGN, Lz in zip(JmHlJmzJl, self._z)]
+    print("JmHlJmzJl + lambda*z: ", dz)
+
+
 
 
     ### Autotuning
     autotune = True
     if autotune:
         # Solve for B,p
-        pass
+        zr = tf.reshape(self._z, [-1,1])
+        dzr = tf.reshape(dz, [-1,1])
+        J = tf.gradients(self._loss_fn, tf.trainable_variables())
+        print("J: ", J)
+        J = tf.reshape(J,[1,-1])
+        Jtz = tf.reshape(tf.matmul(J, zr), [1])
+        Jtdz = tf.reshape(tf.matmul(J, dzr), [1])
+        print("Jtz:", Jtz)
+        print("Jtdz:", Jtdz)
 
-    dz = [tf.scalar_mul(self._beta, element) for element in JmHlJmzJlLz] 
+        Hhatz = tf.gradients(self._output, tf.trainable_variables(), HlJmz)
+
+        Jmdz = utils.fwd_gradients(
+            [self._output], tf.trainable_variables(), grad_xs=dz)#,
+            #stop_gradients=self._output)
+        print("jacobian_vecs_flat:", jacobian_vecs_flat)
+        Jmdz = nest.pack_sequence_as(self._output, Jmdz)
+        Jmdz = tf.reshape(Jmdz, [-1, 1])
+        print("Jmdz: ", Jmdz)
+        HlJmdz = tf.matmul(Hl[0], Jmdz)
+
+        Hhatdz = tf.gradients(self._output, tf.trainable_variables(), tf.reshape(HlJmdz,[-1])) 
+        print("Hhatz:", Hhatz)
+        print("Hhatdz:", Hhatdz)
+        p1a = tf.reshape(-tf.matmul(tf.transpose(dzr), Hhatdz), [1])
+        p1b = tf.reshape(-tf.matmul(tf.transpose(zr), Hhatdz), [1])
+        p1c = tf.reshape(-tf.matmul(tf.transpose(zr), Hhatz), [1])
+        print("p1a", p1a)
+        print("p1b", p1b)
+        print("p1c", p1c)
+        def can_invert():
+            part1 = [[p1a, p1b],
+                     [p1b, p1c]]
+            part1 = tf.reshape(part1, [2,2])
+            print("part1:", part1)
+            part2 = [[Jtdz],[Jtz]]
+            part2 = tf.reshape(part2, [2,1])
+            part1_inv = tf.matrix_inverse(part1)
+            answers = tf.matmul(part1_inv, part2)
+            answers = tf.reshape(answers, [2])
+            return answers
+        def default_values():
+            return tf.constant([-0.001, 0.9])
+        answers = tf.cond(tf.equal(p1a[0]*p1b[0]*p1c[0], tf.zeros_like(p1a)[0]), lambda: default_values(), lambda: can_invert())
+        answers = tf.print(answers, [zr, dzr], message="zr, dzr",summarize=12)
+        answers = tf.print(answers, [Hhatz, Hhatdz], message="Hhatz, Hhatdz",summarize=12)
+        answers = tf.print(answers, [Jtdz, Jtz], message="Jtdz, Jtz",summarize=12)
+        answers = tf.print(answers, [p1a, p1b, p1c, answers], message="autotune vars")
+        print("answers: ", answers)
+        self._beta = -answers[0]
+        self._rho = answers[1]
+
+    self._beta = tf.print(self._beta, [realJmz, "aaaa" ,HlJmz], message="realJmz, HlJmz",summarize=12)
+    self._beta = tf.print(self._beta, [tf.trainable_variables()], message="u, v",summarize=12)
+
+    dz = [tf.scalar_mul(self._beta, element) for element in dz] 
     print("z: ", self._z)
-    self._z = [tf.scalar_mul(self._rho, z_element) + dz_element for z_element, dz_element in zip(self._z, dz)]
+    #self._z = tf.print(self._z, [self._z])
+    self._z = [state_ops.assign(z_element, tf.scalar_mul(self._rho, z_element) - dz_element) for z_element, dz_element in zip(self._z, dz)]
+    return_z = [-zvar for zvar in self._z]
+    #self._z = state_ops.assign(self._z, new_z, new_z)
     print("z: ", self._z)
 
 
-    return zip(self._z, tf.trainable_variables())
+    return zip(return_z, tf.trainable_variables())
 
     #if self._momentum_type == "regular":
     #  # Compute "preconditioned" gradient.
