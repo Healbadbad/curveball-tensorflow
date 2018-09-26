@@ -31,6 +31,7 @@ from tensorflow.python.ops import state_ops
 
 
 class CurveballOptimizer(tf.train.GradientDescentOptimizer):
+  #TODO: Make sure link is right
   """The Curveball Optimizer (https://arxiv.org/abs/1503.05671)."""
 
   def __init__(self,
@@ -644,8 +645,10 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
 
     # Compute HL - Hessian of Loss with respect to output
     Hl = tf.hessians(self._loss_fn, self._output)
+    Hl = tf.print(Hl, [Hl], message="Hl", summarize=12) 
     print("HL", Hl)
     print("trainable_variables: ", tf.trainable_variables())
+    return zip(tf.trainable_variables(), tf.trainable_variables())
 
     magic = curvature_matrix_vector_products.CurvatureMatrixVectorProductComputer([self._loss_fn], [self._output])
 
@@ -677,8 +680,11 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
 
     print("realJMz:", jacobian_vecs_flat)
 
-
-    HlJmz = tf.matmul(Hl[0], realJmz)
+    Hl = tf.print(Hl, [Hl], message="Hl",summarize=12)
+    #HlJmz = tf.matmul(Hl[0], realJmz)
+    print("hl shape: ", Hl[0].shape)
+    Hldims = Hl[0].shape[1]
+    HlJmz = tf.matmul(tf.reshape(Hl[0], (Hldims, Hldims)), realJmz)
     HlJmz = tf.reshape(HlJmz, [-1])
     print("HlJmz: ", HlJmz)
 
@@ -704,11 +710,17 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
     autotune = True
     if autotune:
         # Solve for B,p
-        zr = tf.reshape(self._z, [-1,1])
-        dzr = tf.reshape(dz, [-1,1])
+        print("here?")
+        #zr = tf.reshape(self._z, [-1,1])
+        zr = tf.concat([tf.reshape(layer_weights, [-1, 1]) for layer_weights in self._z], axis=0)
+        print("here2?")
+        #dzr = tf.reshape(dz, [-1,1])
+        dzr = tf.concat([tf.reshape(layer_weights, [-1, 1]) for layer_weights in dz], axis=0)
+        print("here3?")
         J = tf.gradients(self._loss_fn, tf.trainable_variables())
         print("J: ", J)
-        J = tf.reshape(J,[1,-1])
+        #J = tf.reshape(J,[1,-1])
+        J = tf.concat([tf.reshape(layer_weights, [1, -1]) for layer_weights in J], axis=1)
         Jtz = tf.reshape(tf.matmul(J, zr), [1])
         Jtdz = tf.reshape(tf.matmul(J, dzr), [1])
         print("Jtz:", Jtz)
@@ -756,16 +768,16 @@ class CurveballOptimizer(tf.train.GradientDescentOptimizer):
         self._beta = -answers[0]
         self._rho = answers[1]
 
-    self._beta = tf.print(self._beta, [realJmz, "aaaa" ,HlJmz], message="realJmz, HlJmz",summarize=12)
-    self._beta = tf.print(self._beta, [tf.trainable_variables()], message="u, v",summarize=12)
+    #self._beta = tf.print(self._beta, [realJmz, "aaaa" ,HlJmz], message="realJmz, HlJmz",summarize=12)
+    #self._beta = tf.print(self._beta, [tf.trainable_variables()], message="u, v",summarize=12)
 
     dz = [tf.scalar_mul(self._beta, element) for element in dz] 
-    print("z: ", self._z)
+    #print("z: ", self._z)
     #self._z = tf.print(self._z, [self._z])
     self._z = [state_ops.assign(z_element, tf.scalar_mul(self._rho, z_element) - dz_element) for z_element, dz_element in zip(self._z, dz)]
     return_z = [-zvar for zvar in self._z]
     #self._z = state_ops.assign(self._z, new_z, new_z)
-    print("z: ", self._z)
+    #print("z: ", self._z)
 
 
     return zip(return_z, tf.trainable_variables())

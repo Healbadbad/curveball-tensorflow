@@ -15,7 +15,7 @@ def optimization_loop(optimizer, loss, train_step):
     init = tf.initialize_all_variables()
     with tf.train.MonitoredTrainingSession() as sess:
         sess.run(init)
-        for i in range(50):
+        for i in range(5):
         #while not sess.should_stop():
         #    sess.close()
 

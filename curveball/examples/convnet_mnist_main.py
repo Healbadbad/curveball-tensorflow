@@ -27,7 +27,7 @@ import sys
 # Dependency imports
 import tensorflow as tf
 
-from kfac.examples import convnet
+from curveball.examples import convnet
 
 FLAGS = None
 

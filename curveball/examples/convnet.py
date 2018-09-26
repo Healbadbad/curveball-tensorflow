@@ -32,11 +32,11 @@ from __future__ import print_function
 
 import os
 # Dependency imports
-import kfac
+import curveball
 import numpy as np
 import tensorflow as tf
 
-from kfac.examples import mnist
+from curveball.examples import mnist
 
 
 __all__ = [
@@ -169,8 +169,8 @@ def linear_layer(layer_id, inputs, output_size):
 def build_model(examples,
                 labels,
                 num_labels,
-                layer_collection,
-                register_layers=True,
+                #layer_collection,
+                register_layers=False,
                 manual_registartion=False):
   """Builds a ConvNet classification model.
 
@@ -201,8 +201,11 @@ def build_model(examples,
   flat_act3 = tf.reshape(act3, shape=[-1, int(np.prod(act3.shape[1:4]))])
   logits, params4 = linear_layer(
       layer_id=4, inputs=flat_act3, output_size=num_labels)
+  #loss = tf.reduce_mean(
+  #    tf.nn.sparse_softmax_cross_entropy_with_logits(
+  #        labels=labels, logits=logits))
   loss = tf.reduce_mean(
-      tf.nn.sparse_softmax_cross_entropy_with_logits(
+      tf.nn.softmax_cross_entropy_with_logits(
           labels=labels, logits=logits))
   accuracy = tf.reduce_mean(
       tf.cast(tf.equal(labels, tf.argmax(logits, axis=1)), dtype=tf.float32))
@@ -211,8 +214,8 @@ def build_model(examples,
     tf.summary.scalar("loss", loss)
     tf.summary.scalar("accuracy", accuracy)
 
-  layer_collection.register_categorical_predictive_distribution(
-      logits, name="logits")
+  #layer_collection.register_categorical_predictive_distribution(
+  #    logits, name="logits")
   if register_layers:
     # Register parameters. K-FAC needs to know about the inputs, outputs, and
     # parameters of each conv/fully connected layer and the logits powering the
@@ -228,13 +231,13 @@ def build_model(examples,
     else:
       layer_collection.auto_register_layers()
 
-  return loss, accuracy
+  return loss, accuracy, logits
 
 
-def minimize_loss_single_machine(loss,
+def minimize_loss_single_machine(output,
+                                 loss,
                                  accuracy,
-                                 layer_collection,
-                                 device="/gpu:0",
+                                 device="/cpu:0",
                                  session_config=None):
   """Minimize loss with K-FAC on a single machine.
 
@@ -257,20 +260,36 @@ def minimize_loss_single_machine(loss,
   """
   # Train with K-FAC.
   g_step = tf.train.get_or_create_global_step()
-  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
-      invert_every=_INVERT_EVERY,
-      cov_update_every=_COV_UPDATE_EVERY,
-      learning_rate=0.0001,
-      cov_ema_decay=0.95,
-      damping=0.001,
-      layer_collection=layer_collection,
-      placement_strategy="round_robin",
-      cov_devices=[device],
-      inv_devices=[device],
-      momentum=0.9)
+  #optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
+  #    invert_every=_INVERT_EVERY,
+  #    cov_update_every=_COV_UPDATE_EVERY,
+  #    learning_rate=0.0001,
+  #    cov_ema_decay=0.95,
+  #    damping=0.001,
+  #    layer_collection=layer_collection,
+  #    placement_strategy="round_robin",
+  #    cov_devices=[device],
+  #    inv_devices=[device],
+  #    momentum=0.9)
+
+  curveball_optimizer = curveball.CurveballOptimizer(learning_rate=1,
+          name='Curveball',
+          input_to_loss=output)
+
+#  optimizer = kfac.PeriodicInvCovUpdateKfacOpt(
+#      invert_every=_INVERT_EVERY,
+#      cov_update_every=_COV_UPDATE_EVERY,
+#      learning_rate=0.0001,
+#      cov_ema_decay=0.95,
+#      damping=0.001,
+#      layer_collection=layer_collection,
+#      placement_strategy="round_robin",
+#      cov_devices=[device],
+#      inv_devices=[device],
+#      momentum=0.9)
 
   with tf.device(device):
-    train_op = optimizer.minimize(loss, global_step=g_step)
+    train_op = curveball_optimizer.minimize(loss, global_step=g_step)
 
   tf.logging.info("Starting training.")
   with tf.train.MonitoredTrainingSession(config=session_config) as sess:
@@ -560,7 +579,7 @@ def distributed_grads_and_ops_dedicated_workers(
 def train_mnist_single_machine(data_dir,
                                num_epochs,
                                use_fake_data=False,
-                               device="/gpu:0",
+                               device="/cpu:0",
                                manual_op_exec=False):
   """Train a ConvNet on MNIST.
 
@@ -589,17 +608,17 @@ def train_mnist_single_machine(data_dir,
       flatten_images=False)
 
   # Build a ConvNet.
-  layer_collection = kfac.LayerCollection()
-  loss, accuracy = build_model(
-      examples, labels, num_labels=10, layer_collection=layer_collection)
+  #layer_collection = kfac.LayerCollection()
+  loss, accuracy, output = build_model(
+      examples, labels, num_labels=10)
 
   # Fit model.
   if manual_op_exec:
     return minimize_loss_single_machine_manual(
         loss, accuracy, layer_collection, device=device)
   else:
-    return minimize_loss_single_machine(
-        loss, accuracy, layer_collection, device=device)
+    return minimize_loss_single_machine(output,
+        loss, accuracy, device=device)
 
 
 def train_mnist_multitower(data_dir, num_epochs, num_towers,
@@ -671,7 +690,7 @@ def train_mnist_multitower(data_dir, num_epochs, num_towers,
   # Fit model.
 
   session_config = tf.ConfigProto(
-      allow_soft_placement=False,
+      #allow_soft_placement=True,
       device_count=device_count,
   )
 
